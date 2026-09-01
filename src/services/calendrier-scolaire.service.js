@@ -6,6 +6,34 @@ const URL_CALENDRIER_SCOLAIRE =
 
 const ZONE_HORAIRE_FRANCE = "Europe/Paris";
 
+function creerErreur(message, code, status) {
+  const erreur = new Error(message);
+  erreur.code = code;
+  erreur.status = status;
+
+  return erreur;
+}
+
+function obtenirAnneeScolairePrecedente(anneeScolaire) {
+  const [anneeDebut, anneeFin] = anneeScolaire
+    .split("-")
+    .map(Number);
+
+  if (
+    !Number.isInteger(anneeDebut) ||
+    !Number.isInteger(anneeFin) ||
+    anneeFin !== anneeDebut + 1
+  ) {
+    throw creerErreur(
+      `L'année scolaire "${anneeScolaire}" est invalide.`,
+      "ANNEE_SCOLAIRE_INVALIDE",
+      400
+    );
+  }
+
+  return `${anneeDebut - 1}-${anneeDebut}`;
+}
+
 function convertirDateUtcEnDateLocale(dateUtc) {
   const dateLocale = DateTime
     .fromISO(dateUtc, { setZone: true })
@@ -13,25 +41,24 @@ function convertirDateUtcEnDateLocale(dateUtc) {
     .startOf("day");
 
   if (!dateLocale.isValid) {
-    const erreur = new Error(
-      `Date invalide retournée par l'API scolaire : ${dateUtc}`
+    throw creerErreur(
+      `Date invalide retournée par l'API scolaire : ${dateUtc}`,
+      "DATE_CALENDRIER_SCOLAIRE_INVALIDE",
+      502
     );
-
-    erreur.code = "DATE_CALENDRIER_SCOLAIRE_INVALIDE";
-    erreur.status = 502;
-
-    throw erreur;
   }
 
   return dateLocale;
 }
 
-function obtenirAnneeScolairePrecedente(anneeScolaire) {
-  const [anneeDebut] = anneeScolaire
-    .split("-")
-    .map(Number);
-
-  return `${anneeDebut - 1}-${anneeDebut}`;
+function normaliserTexte(texte) {
+  return String(texte ?? "")
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/[’']/g, " ")
+    .replace(/\s+/g, " ")
+    .trim()
+    .toLowerCase();
 }
 
 function convertirResultatApi(resultat) {
@@ -46,121 +73,171 @@ function convertirResultatApi(resultat) {
   };
 }
 
-/**
- * Appel principal.
- *
- * Récupère tous les événements de l'année scolaire demandée :
- * Toussaint, Noël, hiver, printemps, pont et début des vacances d'été.
- */
-async function recupererEvenementsAnneeScolaire(
+async function appelerApiCalendrierScolaire({
+  conditions,
+  limite = 100
+}) {
+  const conditionRecherche = conditions.join(" AND ");
+
+  try {
+    const reponse = await axios.get(
+      URL_CALENDRIER_SCOLAIRE,
+      {
+        params: {
+          where: conditionRecherche,
+          limit: limite,
+          order_by: "start_date"
+        },
+        timeout: 10000
+      }
+    );
+
+    return reponse.data.results ?? [];
+  } catch (erreur) {
+    if (erreur.response) {
+      throw creerErreur(
+        `L'API du calendrier scolaire a répondu avec le statut ${erreur.response.status}.`,
+        "ERREUR_API_CALENDRIER_SCOLAIRE",
+        502
+      );
+    }
+
+    if (erreur.code === "ECONNABORTED") {
+      throw creerErreur(
+        "Le délai d'appel de l'API du calendrier scolaire a été dépassé.",
+        "DELAI_API_CALENDRIER_DEPASSE",
+        504
+      );
+    }
+
+    throw erreur;
+  }
+}
+
+async function recupererEvenementsAnneeDemandee(
   anneeScolaire,
   academie
 ) {
-  const conditionRecherche = [
-    `annee_scolaire="${anneeScolaire}"`,
-    `location="${academie}"`
-  ].join(" AND ");
-
-  const reponse = await axios.get(
-    URL_CALENDRIER_SCOLAIRE,
-    {
-      params: {
-        where: conditionRecherche,
-        limit: 100,
-        order_by: "start_date"
-      },
-      timeout: 10000
-    }
-  );
-
-  const resultats = reponse.data.results ?? [];
+  const resultats = await appelerApiCalendrierScolaire({
+    conditions: [
+      `annee_scolaire="${anneeScolaire}"`,
+      `location="${academie}"`
+    ],
+    limite: 100
+  });
 
   if (resultats.length === 0) {
-    const erreur = new Error(
-      `Aucun calendrier scolaire trouvé pour l'académie ${academie} et l'année ${anneeScolaire}.`
+    throw creerErreur(
+      `Aucun événement scolaire trouvé pour l'académie ${academie} et l'année ${anneeScolaire}.`,
+      "CALENDRIER_SCOLAIRE_INTROUVABLE",
+      404
     );
-
-    erreur.code = "CALENDRIER_SCOLAIRE_INTROUVABLE";
-    erreur.status = 404;
-
-    throw erreur;
   }
 
   return resultats.map(convertirResultatApi);
 }
 
-/**
- * Appel complémentaire.
- *
- * Récupère uniquement les vacances d'été de l'année scolaire précédente.
- * La date de fin correspond à la rentrée des élèves.
- */
-async function recupererVacancesEtePrecedentes(
+async function recupererVacancesEteElevesPrecedentes(
   anneeScolairePrecedente,
   academie
 ) {
-  const conditionRecherche = [
-    `annee_scolaire="${anneeScolairePrecedente}"`,
-    `location="${academie}"`,
-    `description="Vacances d'Été"`,
-    `population="Élèves"`
-  ].join(" AND ");
-
-  const reponse = await axios.get(
-    URL_CALENDRIER_SCOLAIRE,
-    {
-      params: {
-        where: conditionRecherche,
-        limit: 10,
-        order_by: "start_date"
-      },
-      timeout: 10000
-    }
-  );
-
-  const resultats = reponse.data.results ?? [];
+  const resultats = await appelerApiCalendrierScolaire({
+    conditions: [
+      `annee_scolaire="${anneeScolairePrecedente}"`,
+      `location="${academie}"`,
+      `description="Vacances d'Été"`,
+      `population="Élèves"`
+    ],
+    limite: 10
+  });
 
   if (resultats.length === 0) {
-    const erreur = new Error(
-      `Les vacances d'été ${anneeScolairePrecedente} sont introuvables pour l'académie ${academie}.`
+    throw creerErreur(
+      `Les vacances d'été des élèves pour l'année ${anneeScolairePrecedente} sont introuvables pour l'académie ${academie}.`,
+      "VACANCES_ETE_PRECEDENTES_INTROUVABLES",
+      404
     );
+  }
 
-    erreur.code = "VACANCES_ETE_PRECEDENTES_INTROUVABLES";
-    erreur.status = 404;
-
-    throw erreur;
+  if (resultats.length > 1) {
+    throw creerErreur(
+      `Plusieurs périodes de vacances d'été des élèves ont été trouvées pour l'année ${anneeScolairePrecedente} et l'académie ${academie}.`,
+      "VACANCES_ETE_PRECEDENTES_AMBIGUES",
+      502
+    );
   }
 
   return convertirResultatApi(resultats[0]);
 }
 
-function rechercherDebutVacancesEte(
+function rechercherVacancesEteCourantes(
   evenementsScolaires
 ) {
-  const evenement = evenementsScolaires.find(
-    (element) =>
-      element.description ===
-      "Début des Vacances d'Été"
-  );
+  const vacancesEteEleves =
+    evenementsScolaires.find((evenement) => {
+      const description = normaliserTexte(
+        evenement.description
+      );
 
-  if (!evenement) {
-    const erreur = new Error(
-      "L'événement « Début des Vacances d'Été » est introuvable."
-    );
+      const population = normaliserTexte(
+        evenement.population
+      );
 
-    erreur.code = "DEBUT_VACANCES_ETE_INTROUVABLE";
-    erreur.status = 502;
+      return (
+        description === "vacances d ete" &&
+        population === "eleves"
+      );
+    });
 
-    throw erreur;
+  if (vacancesEteEleves) {
+    return vacancesEteEleves;
   }
 
-  return evenement;
+  const debutVacancesEte =
+    evenementsScolaires.find((evenement) => {
+      const description = normaliserTexte(
+        evenement.description
+      );
+
+      return (
+        description ===
+        "debut des vacances d ete"
+      );
+    });
+
+  if (debutVacancesEte) {
+    return debutVacancesEte;
+  }
+
+  throw creerErreur(
+    "Les vacances d'été des élèves sont introuvables dans le calendrier scolaire demandé.",
+    "VACANCES_ETE_COURANTES_INTROUVABLES",
+    502
+  );
 }
 
-/**
- * Retourne tous les événements scolaires ainsi que les bornes
- * officielles de la période de scolarité.
- */
+function verifierAcademie(
+  evenementsScolaires,
+  academie
+) {
+  const academiesRetournees = new Set(
+    evenementsScolaires.map(
+      (evenement) => evenement.academie
+    )
+  );
+
+  if (
+    academiesRetournees.size !== 1 ||
+    !academiesRetournees.has(academie)
+  ) {
+    throw creerErreur(
+      `Les événements retournés ne correspondent pas tous à l'académie ${academie}.`,
+      "ACADEMIE_CALENDRIER_INCOHERENTE",
+      502
+    );
+  }
+}
+
 export async function recupererPeriodeScolaire(
   anneeScolaire,
   academie
@@ -174,70 +251,59 @@ export async function recupererPeriodeScolaire(
     evenementsScolaires,
     vacancesEtePrecedentes
   ] = await Promise.all([
-    /*
-     * Appel 1 :
-     * tous les événements de l'année demandée.
-     */
-    recupererEvenementsAnneeScolaire(
+    recupererEvenementsAnneeDemandee(
       anneeScolaire,
       academie
     ),
 
-    /*
-     * Appel 2 :
-     * uniquement les vacances d'été de l'année précédente.
-     */
-    recupererVacancesEtePrecedentes(
+    recupererVacancesEteElevesPrecedentes(
       anneeScolairePrecedente,
       academie
     )
   ]);
 
-  /*
-   * La fin des vacances d'été précédentes correspond
-   * à la rentrée des élèves.
-   */
+  verifierAcademie(
+    evenementsScolaires,
+    academie
+  );
+
+  const vacancesEteCourantes =
+    rechercherVacancesEteCourantes(
+      evenementsScolaires
+    );
+
   const dateDebutScolarite =
     convertirDateUtcEnDateLocale(
       vacancesEtePrecedentes.dateFinUtc
     );
 
-  const evenementDebutVacancesEte =
-    rechercherDebutVacancesEte(
-      evenementsScolaires
-    );
-
   const dateDebutVacancesEte =
     convertirDateUtcEnDateLocale(
-      evenementDebutVacancesEte.dateDebutUtc
+      vacancesEteCourantes.dateDebutUtc
     );
 
-  /*
-   * Les vacances commencent après les cours.
-   * La veille de leur date locale de début est donc
-   * le dernier jour de classe.
-   */
   const dateFinScolarite =
-    dateDebutVacancesEte.minus({ days: 1 });
+    dateDebutVacancesEte.minus({
+      days: 1
+    });
 
   if (dateFinScolarite < dateDebutScolarite) {
-    const erreur = new Error(
-      "La période scolaire calculée est incohérente."
+    throw creerErreur(
+      "La période scolaire calculée est incohérente : la date de fin précède la date de rentrée.",
+      "PERIODE_SCOLAIRE_INVALIDE",
+      502
     );
-
-    erreur.code = "PERIODE_SCOLAIRE_INVALIDE";
-    erreur.status = 502;
-
-    throw erreur;
   }
 
   return {
     anneeScolaire,
+    anneeScolairePrecedente,
     academie,
 
     zoneScolaire:
-      evenementsScolaires[0]
-        ?.zoneScolaire ?? null,
+      vacancesEteCourantes.zoneScolaire ??
+      evenementsScolaires[0]?.zoneScolaire ??
+      null,
 
     dateDebutScolarite:
       dateDebutScolarite.toISODate(),
@@ -248,12 +314,33 @@ export async function recupererPeriodeScolaire(
     dateDebutVacancesEte:
       dateDebutVacancesEte.toISODate(),
 
-    vacancesEtePrecedentes,
+    sourceDateDebutScolarite: {
+      anneeScolaire:
+        anneeScolairePrecedente,
 
-    /*
-     * Cette liste contient toujours les 6 événements
-     * de l'année scolaire demandée.
-     */
+      description:
+        vacancesEtePrecedentes.description,
+
+      population:
+        vacancesEtePrecedentes.population,
+
+      dateFinUtc:
+        vacancesEtePrecedentes.dateFinUtc
+    },
+
+    sourceDateFinScolarite: {
+      anneeScolaire,
+
+      description:
+        vacancesEteCourantes.description,
+
+      population:
+        vacancesEteCourantes.population,
+
+      dateDebutUtc:
+        vacancesEteCourantes.dateDebutUtc
+    },
+
     evenementsScolaires
   };
 }

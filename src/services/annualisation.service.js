@@ -17,6 +17,19 @@ const JOURS_SEMAINE = {
     DIMANCHE: 7
 };
 
+const LIBELLES_JOURS_SEMAINE = {
+    1: "LUNDI",
+    2: "MARDI",
+    3: "MERCREDI",
+    4: "JEUDI",
+    5: "VENDREDI",
+    6: "SAMEDI",
+    7: "DIMANCHE"
+};
+
+function obtenirJourSemaine(date) {
+    return LIBELLES_JOURS_SEMAINE[date.weekday];
+}
 function convertirDateUtcEnDateLocale(dateUtc) {
     const dateLocale = DateTime.fromISO(dateUtc, { setZone: true })
         .setZone(ZONE_HORAIRE_FRANCE)
@@ -71,6 +84,30 @@ function estPontScolaire(evenement) {
         .toLocaleLowerCase("fr-FR")
         .includes("pont");
 }
+function genererJoursOuvresBruts(
+    dateDebutScolarite,
+    dateFinScolarite
+) {
+    const joursOuvresBruts = [];
+
+    let dateCourante = dateDebutScolarite;
+
+    while (dateCourante <= dateFinScolarite) {
+        const estJourOuvreBrut =
+            dateCourante.weekday >= JOURS_SEMAINE.LUNDI &&
+            dateCourante.weekday <= JOURS_SEMAINE.VENDREDI;
+
+        if (estJourOuvreBrut) {
+            joursOuvresBruts.push(dateCourante);
+        }
+
+        dateCourante = dateCourante.plus({
+            days: 1
+        });
+    }
+
+    return joursOuvresBruts;
+}
 
 function genererJoursOuvres(
     dateDebutScolarite,
@@ -114,6 +151,7 @@ function construireExclusionsScolaires(evenementsScolaires) {
             const dateIso = dateDebut.toISODate();
             exclusionsParDate.set(dateIso, {
                 date: dateIso,
+                jourSemaine: obtenirJourSemaine(dateDebut),
                 libelle: evenement.description,
                 motif: "Pont scolaire"
             });
@@ -126,6 +164,7 @@ function construireExclusionsScolaires(evenementsScolaires) {
             const dateIso = dateCourante.toISODate();
             exclusionsParDate.set(dateIso, {
                 date: dateIso,
+                jourSemaine: obtenirJourSemaine(dateCourante),
                 libelle: evenement.description,
                 motif: "Vacances scolaires"
             });
@@ -159,6 +198,7 @@ function ajouterJoursFeriesAuxExclusions(
 
         exclusionsParDate.set(jourFerie.date, {
             date: jourFerie.date,
+            jourSemaine: obtenirJourSemaine(dateJourFerie),
             libelle: jourFerie.libelle,
             motif: "Jour ferie"
         });
@@ -192,7 +232,10 @@ export async function calculerAnnualisation(parametres) {
     const dateFinScolarite = convertirDateIsoEnDateLocale(
         periodeScolaire.dateFinScolarite
     );
-
+    const joursOuvresBruts = genererJoursOuvresBruts(
+        dateDebutScolarite,
+        dateFinScolarite
+    );
     const joursOuvres = genererJoursOuvres(
         dateDebutScolarite,
         dateFinScolarite,
@@ -221,21 +264,36 @@ export async function calculerAnnualisation(parametres) {
         (date) => !datesExclues.has(date.toISODate())
     );
 
-    const nombreJoursOuvres = joursOuvres.length;
-    const nombreJoursExclus = joursExclus.length;
-    const nombreJoursClasse = joursClasse.length;
+    const nombreJoursOuvresBruts =
+        joursOuvresBruts.length;
 
-    if (nombreJoursOuvres - nombreJoursExclus !== nombreJoursClasse) {
+    const nombreJoursTravaillesPrevus =
+        joursOuvres.length;
+
+
+    const nombreJoursExclus =
+        joursExclus.length;
+
+    const nombreJoursTravaillesClasse =
+        joursClasse.length;
+
+    if (
+        nombreJoursTravaillesPrevus - nombreJoursExclus !==
+        nombreJoursTravaillesClasse
+    ) {
         const erreur = new Error(
-            "Le decompte des jours ouvres, exclus et de classe est incoherent."
+            "Le décompte des jours travaillés prévus, exclus et travaillés en période de classe est incohérent."
         );
+
         erreur.code = "DECOMPTE_JOURS_INCOHERENT";
         erreur.status = 500;
+
         throw erreur;
     }
 
     const heuresAnnuellesPoste = arrondir(
-        nombreJoursClasse * heuresTravailParJour,
+        nombreJoursTravaillesClasse *
+        heuresTravailParJour,
         2
     );
 
@@ -289,33 +347,37 @@ export async function calculerAnnualisation(parametres) {
         zoneJoursFeries,
 
         calendrier: {
-            dateDebutScolarite:
-                periodeScolaire.dateDebutScolarite,
+            calendrier: {
+                dateDebutScolarite:
+                    periodeScolaire.dateDebutScolarite,
 
-            dateFinScolarite:
-                periodeScolaire.dateFinScolarite,
+                dateFinScolarite:
+                    periodeScolaire.dateFinScolarite,
 
-            dateDebutVacancesEte:
-                periodeScolaire.dateDebutVacancesEte,
+                dateDebutVacancesEte:
+                    periodeScolaire.dateDebutVacancesEte,
 
-            joursTravaillesSemaine:
-                joursTravailles,
+                joursTravaillesSemaine:
+                    joursTravailles,
 
-            nombreJoursOuvres,
-            nombreJoursExclus,
-            nombreJoursClasse,
-            joursExclus
+                nombreJoursOuvresBruts,
+                nombreJoursTravaillesPrevus,
+                nombreJoursExclus,
+                nombreJoursTravaillesClasse,
+
+                joursExclus
+            },
+
         },
 
         calculHeures: {
             heuresTravailParJour,
 
             formule:
-                "Nombre de jours de classe x Heures de travail par jour",
+                "Nombre de jours travaillés en période de classe x Heures de travail par jour",
 
             calcul:
-                `${nombreJoursClasse} x ` +
-                `${formaterNombre(
+                `${nombreJoursTravaillesClasse} x ${formaterNombre(
                     heuresTravailParJour,
                     1
                 )}`,
