@@ -84,20 +84,33 @@ function estPontScolaire(evenement) {
         .toLocaleLowerCase("fr-FR")
         .includes("pont");
 }
+
 function genererJoursOuvresBruts(
     dateDebutScolarite,
-    dateFinScolarite
+    dateFinScolarite,
+    joursFeries
 ) {
+    const datesFeriees = new Set(
+        joursFeries.map((jourFerie) => jourFerie.date)
+    );
+
     const joursOuvresBruts = [];
 
     let dateCourante = dateDebutScolarite;
 
     while (dateCourante <= dateFinScolarite) {
-        const estJourOuvreBrut =
+        const estDuLundiAuVendredi =
             dateCourante.weekday >= JOURS_SEMAINE.LUNDI &&
             dateCourante.weekday <= JOURS_SEMAINE.VENDREDI;
 
-        if (estJourOuvreBrut) {
+        const estJourFerie = datesFeriees.has(
+            dateCourante.toISODate()
+        );
+
+        if (
+            estDuLundiAuVendredi &&
+            !estJourFerie
+        ) {
             joursOuvresBruts.push(dateCourante);
         }
 
@@ -234,7 +247,8 @@ export async function calculerAnnualisation(parametres) {
     );
     const joursOuvresBruts = genererJoursOuvresBruts(
         dateDebutScolarite,
-        dateFinScolarite
+        dateFinScolarite,
+        joursFeries
     );
     const joursOuvres = genererJoursOuvres(
         dateDebutScolarite,
@@ -347,26 +361,26 @@ export async function calculerAnnualisation(parametres) {
         zoneJoursFeries,
 
         calendrier: {
-            calendrier: {
-                dateDebutScolarite:
-                    periodeScolaire.dateDebutScolarite,
 
-                dateFinScolarite:
-                    periodeScolaire.dateFinScolarite,
+            dateDebutScolarite:
+                periodeScolaire.dateDebutScolarite,
 
-                dateDebutVacancesEte:
-                    periodeScolaire.dateDebutVacancesEte,
+            dateFinScolarite:
+                periodeScolaire.dateFinScolarite,
 
-                joursTravaillesSemaine:
-                    joursTravailles,
+            dateDebutVacancesEte:
+                periodeScolaire.dateDebutVacancesEte,
 
-                nombreJoursOuvresBruts,
-                nombreJoursTravaillesPrevus,
-                nombreJoursExclus,
-                nombreJoursTravaillesClasse,
+            joursTravaillesSemaine:
+                joursTravailles,
 
-                joursExclus
-            },
+            nombreJoursOuvresBruts,
+            nombreJoursTravaillesPrevus,
+            nombreJoursExclus,
+            nombreJoursTravaillesClasse,
+
+            joursExclus
+
 
         },
 
